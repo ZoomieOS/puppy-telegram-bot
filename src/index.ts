@@ -48,18 +48,22 @@ function isPlanActive(date: string): boolean {
 function todayItems(now: DateTime): Array<{ time: string; text: string }> {
   const date = now.toISODate()!;
   const weekday = now.weekday;
+  const currentTime = now.toFormat("HH:mm");
 
   const regular = isPlanActive(date)
-    ? dailySchedule.filter((item) =>
-        inRange(date, item) &&
-        (!item.weekdays || item.weekdays.includes(weekday))
+    ? dailySchedule.filter(
+        (item) =>
+          inRange(date, item) &&
+          (!item.weekdays || item.weekdays.includes(weekday)) &&
+          item.time >= currentTime
       )
     : [];
 
-  const phases = phaseMessages.filter((item) => inRange(date, item));
-  const specials = specialEvents.filter((item) => item.date === date);
+  const specials = specialEvents.filter(
+    (item) => item.date === date && item.time >= currentTime
+  );
 
-  return [...regular, ...phases, ...specials]
+  return [...regular, ...specials]
     .map(({ time, text }) => ({ time, text }))
     .sort((a, b) => a.time.localeCompare(b.time));
 }
@@ -88,19 +92,62 @@ bot.start(async (ctx) => {
   );
 });
 
+function splitTelegramMessages(lines: string[], maxLength = 3500): string[] {
+  const messages: string[] = [];
+  let current = "";
+
+  for (const line of lines) {
+    const candidate = current ? `${current}\n\n${line}` : line;
+
+    if (candidate.length <= maxLength) {
+      current = candidate;
+      continue;
+    }
+
+    if (current) {
+      messages.push(current);
+    }
+
+    if (line.length <= maxLength) {
+      current = line;
+      continue;
+    }
+
+    for (let index = 0; index < line.length; index += maxLength) {
+      messages.push(line.slice(index, index + maxLength));
+    }
+
+    current = "";
+  }
+
+  if (current) {
+    messages.push(current);
+  }
+
+  return messages;
+}
+
 bot.command("today", async (ctx) => {
   const now = DateTime.now().setZone(timezone);
   const items = todayItems(now);
   const date = now.toFormat("dd.LL.yyyy");
+  const currentTime = now.toFormat("HH:mm");
 
   if (items.length === 0) {
-    await ctx.reply(`На ${date} напоминаний нет.`);
+    await ctx.reply(`На сегодня после ${currentTime} действий больше нет.`);
     return;
   }
 
-  await ctx.reply(
-    [`📅 План на ${date}:`, ...items.map((item) => `${item.time} — ${item.text}`)].join("\n\n")
-  );
+  const lines = [
+    `📅 План на ${date} с ${currentTime}:`,
+    ...items.map((item) => `${item.time} — ${item.text}`)
+  ];
+
+  const messages = splitTelegramMessages(lines);
+
+  for (const message of messages) {
+    await ctx.reply(message);
+  }
 });
 
 bot.command("pause", async (ctx) => {
@@ -163,14 +210,6 @@ async function schedulerTick(): Promise<void> {
     }
   }
 
-  for (const item of phaseMessages) {
-    if (item.time === time && inRange(date, item)) {
-      jobs.push({
-        key: `${date}:${item.id}`,
-        text: item.text
-      });
-    }
-  }
 
   for (const event of specialEvents) {
     if (event.date === date && event.time === time) {
